@@ -30,8 +30,22 @@ Enter following command to enforce the firewall:
 $ docker run -ti --rm --cap-add=NET_ADMIN --net=host -v /var/run/docker.sock:/var/run/docker.sock devrt/host-network-firewall
 ```
 
+Check your current iptables:
+
+```
+$ sudo iptables-save
+```
+
 Run nmap scans again to make sure it is protected.
 
+Persist firewall protection
+---------------------------
+
+Once you have confirmed firewall protection, you can persist the protection by entering following command:
+
+```
+$ docker run --name host-network-firewall -d --restart=always --cap-add=NET_ADMIN --net=host -v /var/run/docker.sock:/var/run/docker.sock devrt/host-network-firewall
+```
 
 Notice
 ------
