@@ -1,10 +1,11 @@
-FROM bitnami/minideb:jessie
+FROM docker as docker
+FROM busybox
 
 MAINTAINER Yosuke Matsusaka <yosuke.matsusaka@gmail.com>
 
+COPY --from=docker /usr/local/bin/docker /bin/docker
+ADD https://github.com/pts/staticpython/raw/master/release/python2.7-static /bin/python
+RUN chmod 755 /bin/python
 ADD docker-host-network-firewall.py .
-ADD requirements.txt .
 
-RUN install_packages gcc libc-dev iptables-dev python-pip && pip install -r requirements.txt && apt-get --purge -y remove gcc libc-dev && apt-get --purge -y autoremove
-
-CMD ["python2", "docker-host-network-firewall.py"]
+CMD ["python", "docker-host-network-firewall.py"]
