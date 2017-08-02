@@ -6,8 +6,9 @@
 # distributed under MIT license
 
 import time
-import docker
-import iptc
+import subprocess
+import shlex
+import json
 
 
 private_ips = [
@@ -18,143 +19,109 @@ private_ips = [
 ]
 
 
-def get_or_create_chain(table, chain_name):
-    if table.is_chain(chain_name):
-        return iptc.Chain(table, chain_name)
-    return table.create_chain(chain_name)
+def run_cmd(args):
+    print "run cmd: " + args
+    try:
+        out = subprocess.check_output(shlex.split(args))
+        if type(out) == bytes:
+            out = out.decode('utf-8')
+    except:
+        out = -1
+    return out
 
 
-def bring_chain_to_top(chain, chain2):
-    if len(chain.rules) > 0 and chain.rules[0].target.name == chain2.name:
-        return
-    for r in chain.rules:
-        if r.target.name == chain2.name:
-            chain.delete_rule(r)
-    rule = iptc.Rule()
-    rule.target = iptc.Target(rule, chain2.name)
-    chain.insert_rule(rule)
+def get_existing_bridge_ids():
+    return run_cmd('docker network ls --no-trunc --filter driver=bridge --format {{.ID}}').splitlines()
 
 
-def get_bridge_name(n):
+def inspect_network(id):
+    return json.loads(run_cmd('docker network inspect {0}'.format(id)))[0]
+
+
+def get_bridge_name(attrs):
     bridge_name = None
     try:
-        bridge_name = n.attrs['Options']['com.docker.network.bridge.name']
+        bridge_name = attrs['Options']['com.docker.network.bridge.name']
     except KeyError:
-        bridge_name = 'br-' + n.id[:12]
+        bridge_name = 'br-' + attrs['Id'][:12]
     return bridge_name
 
 
 def append_rule_for_bridge(chain, bridge_name, is_forward=False):
     created_rules = []
-    
+
+    if is_forward:
+        ioargs = '-i {0} ! -o {0}'.format(bridge_name)
+    else:
+        ioargs = '-i {0}'.format(bridge_name)
+
     # we want to allow the return packet for the connection from outside the container
-    rule = iptc.Rule()
-    rule.in_interface = bridge_name
-    if is_forward:
-        rule.out_interface = '!' + bridge_name
-    match = iptc.Match(rule, 'conntrack')
-    match.ctstate = 'RELATED,ESTABLISHED'
-    rule.add_match(match)
-    rule.target = iptc.Target(rule, 'ACCEPT')
-    chain.append_rule(rule)
-    created_rules.append(rule)
-    
-    rule = iptc.Rule()
-    rule.in_interface = bridge_name
-    if is_forward:
-        rule.out_interface = '!' + bridge_name
-    match = iptc.Match(rule, 'conntrack')
-    match.ctstate = 'INVALID'
-    rule.add_match(match)
-    rule.target = iptc.Target(rule, 'DROP')
-    chain.append_rule(rule)
-    created_rules.append(rule)
-    
+    run_cmd('iptables -A {chain} {ioargs} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT'.format(chain=chain, ioargs=ioargs))
+    run_cmd('iptables -A {chain} {ioargs} -m conntrack --ctstate INVALID -j DROP'.format(chain=chain, ioargs=ioargs))
+
     # drop all the packet directed to our private network
     for ip in private_ips:
-        rule = iptc.Rule()
-        rule.in_interface = bridge_name
-        if is_forward:
-            rule.out_interface = '!' + bridge_name
-        rule.dst = ip
-        rule.target = iptc.Target(rule, 'DROP')
-        chain.append_rule(rule)
-        created_rules.append(rule)
+        run_cmd('iptables -A {chain} -d {ip} {ioargs} -j DROP'.format(chain=chain, ip=ip, ioargs=ioargs))
     return created_rules
 
 
-d = docker.from_env()
+def delete_rule_for_bridge(chain, bridge_name):
+    rules = run_cmd('iptables -S {0}'.format(chain)).splitlines()
+    for r in rules:
+        e = shlex.split(r)
+        if bridge_name in e:
+            run_cmd('iptables -D {0} {1}'.format(chain, ' '.join(e[2:])))
 
-table = iptc.Table(iptc.Table.FILTER)
-c_input = iptc.Chain(table, 'INPUT')
-c_forward = iptc.Chain(table, 'FORWARD')
 
-# create custom chains for protection
-c_fw = get_or_create_chain(table, 'DOCKER-HOST-FW')
-c_fw_forward = get_or_create_chain(table, 'DOCKER-HOST-FW-F')
+# name of custom chains
+c_fw = 'DOCKER-HOST-FW'
+c_fw_forward = 'DOCKER-HOST-FW-F'
 
-c_fw.flush()
-c_fw_forward.flush()
+for c in [c_fw, c_fw_forward]:
+    # create custom chain for protection
+    run_cmd('iptables -N {0}'.format(c))
+    # flush existing rule
+    run_cmd('iptables -F {0}'.format(c))
 
-# created rules
-rules_for_nw = {}
-forward_rules_for_nw = {}
+# append custom chains to each parent
+run_cmd('iptables -D INPUT -j {0}'.format(c_fw))
+run_cmd('iptables -I INPUT -j {0}'.format(c_fw))
+run_cmd('iptables -D DOCKER-USER -j {0}'.format(c_fw_forward))
+run_cmd('iptables -I DOCKER-USER -j {0}'.format(c_fw_forward))
 
-# firewall rules should always stay on top
-bring_chain_to_top(c_input, c_fw)
-bring_chain_to_top(c_forward, c_fw_forward)
+bridge_name_for_id = {}
 
 # create rule to protect local network
 # for each network bridges
-for n in d.networks.list():
-    if n.attrs['Driver'] == 'bridge':
-        print "enforce firewall rule for network " + n.id
-        bridge_name = get_bridge_name(n)
-        rules_for_nw[n.id] = append_rule_for_bridge(c_fw, bridge_name, False)
-        forward_rules_for_nw[n.id] = append_rule_for_bridge(c_fw_forward, bridge_name, True)
+for id in get_existing_bridge_ids():
+    print "enforce firewall rule for network " + id
+    attrs = inspect_network(id)
+    bridge_name = get_bridge_name(attrs)
+    append_rule_for_bridge(c_fw, bridge_name, False)
+    append_rule_for_bridge(c_fw_forward, bridge_name, True)
 
-failed_rules = []
 # monitor docker network events to update the rules
-for e in d.events(decode=True):
+proc = subprocess.Popen(shlex.split('docker events --filter type=network --format "{{json .}}"'), stdout=subprocess.PIPE)
+for l in iter(proc.stdout.readline, ''):
+    e = json.loads(l)
     if 'Type' in e and e['Type'] == 'network':
         if 'Action' in e:
             action = e['Action']
             if action == 'create':
                 id = e['Actor']['ID']
                 print "detect creation of network " + id
-                n = d.networks.get(id)
-                if n.attrs['Driver'] == 'bridge':
-                    bridge_name = get_bridge_name(n)
-                    rules_for_nw[id] = append_rule_for_bridge(c_fw, bridge_name, False)
-                    forward_rules_for_nw[id] = append_rule_for_bridge(c_fw_forward, bridge_name, True)
+                attrs = inspect_network(id)
+                if attrs['Driver'] == 'bridge':
+                    bridge_name = get_bridge_name(attrs)
+                    append_rule_for_bridge(c_fw, bridge_name, False)
+                    append_rule_for_bridge(c_fw_forward, bridge_name, True)
+                    bridge_name_for_id[id] = bridge_name
             elif action == 'destroy':
                 id = e['Actor']['ID']
                 print "detect deletion of network " + id
-                if id in rules_for_nw:
-                    for r in reversed(rules_for_nw[id]):
-                        try:
-                            c_fw.delete_rule(r)
-                        except iptc.IPTCError:
-                            print "error occoured when deleting rule (retry later)"
-                            failed_rules.append([c_fw, r])
-                if id in forward_rules_for_nw:
-                    for r in reversed(forward_rules_for_nw[id]):
-                        try:
-                            c_fw_forward.delete_rule(r)
-                        except iptc.IPTCError:
-                            print "error occoured when deleting rule (retry later)"
-                            failed_rules.append([c_fw_forward, r])
-
-        # retry if there is any failed rule deletion
-        failed_again = []
-        for f in failed_rules:
-            try:
-                f[0].delete_rule(f[1])
-            except iptc.IPTCError:
-                print "error occoured when deleting rule"
-                failed_again.append(f)
-        failed_rules = failed_again
-
-        # firewall rules should always stay on top (docker sometimes break this order on network reconfiguration)
-        bring_chain_to_top(c_input, c_fw)
-        bring_chain_to_top(c_forward, c_fw_forward)
+                try:
+                    bridge_name = bridge_name_for_id[id]
+                    delete_rule_for_bridge(c_fw, bridge_name)
+                    delete_rule_for_bridge(c_fw_forward, bridge_name)
+                except:
+                    pass
