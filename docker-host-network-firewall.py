@@ -6,7 +6,9 @@
 # distributed under MIT license
 
 import time
+import sys
 import subprocess
+import atexit
 import shlex
 import json
 
@@ -73,6 +75,38 @@ def delete_rule_for_bridge(chain, bridge_name):
             run_cmd('iptables -D {0} {1}'.format(chain, ' '.join(e[2:])))
 
 
+def get_my_image_id_and_name():
+    image_id_and_name = None
+    with open('/proc/1/cpuset') as f:
+        container_id = f.readline().replace('/docker/', '')
+        image_id_and_name = run_cmd('docker inspect --format "{{.Image}} {{.Name}}" ' + container_id).strip().split()
+    return image_id_and_name
+
+
+def stop_agent(image_id_and_name):
+    run_cmd('docker stop "{0[1]}-agent"'.format(image_id_and_name))
+
+
+def respawn_agent_with_privilege():
+    image_id_and_name = get_my_image_id_and_name()
+    #atexit.register(stop_agent, image_id_and_name)  # should be stopped but not working (why?)
+    proc = subprocess.Popen(shlex.split('docker run --name "{0[1]}-agent" -it --rm --cap-add=NET_ADMIN --net=host -v /var/run/docker.sock:/var/run/docker.sock {0[0]}'.format(image_id_and_name)), stdout=subprocess.PIPE)
+    for l in iter(proc.stdout.readline, ''):
+        sys.stdout.write(l)
+
+
+# check if iptables is available with enough privilege
+no_docker_user = False
+out = run_cmd('iptables -S FORWARD')
+if out == -1:
+    print "it seems the container spawned without enough privilege, spawning agent container"
+    respawn_agent_with_privilege()
+    exit()
+else:
+    if '-A FORWARD -j DOCKER-USER' not in out.splitlines():
+        print "DOCKER-USER chain not found (docker version < 17.06) using fallback"
+        no_docker_user = True
+
 # name of custom chains
 c_fw = 'DOCKER-HOST-FW'
 c_fw_forward = 'DOCKER-HOST-FW-F'
@@ -86,8 +120,12 @@ for c in [c_fw, c_fw_forward]:
 # append custom chains to each parent
 run_cmd('iptables -D INPUT -j {0}'.format(c_fw))
 run_cmd('iptables -I INPUT -j {0}'.format(c_fw))
-run_cmd('iptables -D DOCKER-USER -j {0}'.format(c_fw_forward))
-run_cmd('iptables -I DOCKER-USER -j {0}'.format(c_fw_forward))
+if no_docker_user:
+    run_cmd('iptables -D FORWARD -j {0}'.format(c_fw_forward))
+    run_cmd('iptables -I FORWARD -j {0}'.format(c_fw_forward))
+else:
+    run_cmd('iptables -D DOCKER-USER -j {0}'.format(c_fw_forward))
+    run_cmd('iptables -I DOCKER-USER -j {0}'.format(c_fw_forward))
 
 bridge_name_for_id = {}
 
@@ -101,7 +139,7 @@ for id in get_existing_bridge_ids():
     append_rule_for_bridge(c_fw_forward, bridge_name, True)
 
 # monitor docker network events to update the rules
-proc = subprocess.Popen(shlex.split('docker events --filter type=network --format "{{json .}}"'), stdout=subprocess.PIPE)
+proc = subprocess.Popen(shlex.split('docker events --format "{{json .}}"'), stdout=subprocess.PIPE)
 for l in iter(proc.stdout.readline, ''):
     e = json.loads(l)
     if 'Type' in e and e['Type'] == 'network':
@@ -123,5 +161,14 @@ for l in iter(proc.stdout.readline, ''):
                     bridge_name = bridge_name_for_id[id]
                     delete_rule_for_bridge(c_fw, bridge_name)
                     delete_rule_for_bridge(c_fw_forward, bridge_name)
+                    del bridge_name_for_id[id]
                 except:
                     pass
+    if no_docker_user:
+        out = run_cmd('iptables -S FORWARD').splitlines()
+        v = out[0]
+        if v == '-P FORWARD ACCEPT':
+            v = out[1]
+        if v != '-A FORWARD -j {0}'.format(c_fw_forward):
+            run_cmd('iptables -D FORWARD -j {0}'.format(c_fw_forward))
+            run_cmd('iptables -I FORWARD -j {0}'.format(c_fw_forward))
