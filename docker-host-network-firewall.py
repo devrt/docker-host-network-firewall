@@ -50,21 +50,16 @@ def get_bridge_name(attrs):
 
 
 def append_rule_for_bridge(chain, bridge_name, is_forward=False):
-    created_rules = []
-
     if is_forward:
         ioargs = '-i {0} ! -o {0}'.format(bridge_name)
     else:
         ioargs = '-i {0}'.format(bridge_name)
-
     # we want to allow the return packet for the connection from outside the container
     run_cmd('iptables -A {chain} {ioargs} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT'.format(chain=chain, ioargs=ioargs))
     run_cmd('iptables -A {chain} {ioargs} -m conntrack --ctstate INVALID -j DROP'.format(chain=chain, ioargs=ioargs))
-
     # drop all the packet directed to our private network
     for ip in private_ips:
         run_cmd('iptables -A {chain} -d {ip} {ioargs} -j DROP'.format(chain=chain, ip=ip, ioargs=ioargs))
-    return created_rules
 
 
 def delete_rule_for_bridge(chain, bridge_name):
@@ -129,8 +124,7 @@ else:
 
 bridge_name_for_id = {}
 
-# create rule to protect local network
-# for each network bridges
+# create rule to protect local area network for each network bridges
 for id in get_existing_bridge_ids():
     print "enforce firewall rule for network " + id
     attrs = inspect_network(id)
@@ -165,6 +159,7 @@ for l in iter(proc.stdout.readline, ''):
                 except:
                     pass
     if no_docker_user:
+        # docker may occationally modify FORWARD rules order, so we check and reorder it
         out = run_cmd('iptables -S FORWARD').splitlines()
         v = out[0]
         if v == '-P FORWARD ACCEPT':
