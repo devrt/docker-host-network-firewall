@@ -1,7 +1,9 @@
 #FROM docker as docker
-FROM busybox
+FROM alpine
 
 MAINTAINER Yosuke Matsusaka <yosuke.matsusaka@gmail.com>
+
+RUN apk add --no-cache iptables
 
 #COPY --from=docker /usr/local/bin/docker /bin/docker
 ADD https://master.dockerproject.org/linux/x86_64/docker /bin/docker
