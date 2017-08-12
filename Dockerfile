@@ -3,7 +3,7 @@ FROM alpine
 
 MAINTAINER Yosuke Matsusaka <yosuke.matsusaka@gmail.com>
 
-RUN apk add --no-cache iptables
+RUN apk add --no-cache tini iptables
 
 #COPY --from=docker /usr/local/bin/docker /bin/docker
 ADD https://master.dockerproject.org/linux/x86_64/docker /bin/docker
@@ -12,4 +12,6 @@ ADD https://github.com/pts/staticpython/raw/master/release/python2.7-static /bin
 RUN chmod 755 /bin/python
 ADD docker-host-network-firewall.py .
 
-CMD ["python", "docker-host-network-firewall.py"]
+ENTRYPOINT ["/sbin/tini", "--"]
+
+CMD ["/bin/python", "docker-host-network-firewall.py"]
