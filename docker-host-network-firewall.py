@@ -84,7 +84,7 @@ def stop_agent(image_id_and_name):
 
 def respawn_agent_with_privilege():
     image_id_and_name = get_my_image_id_and_name()
-    atexit.register(stop_agent, image_id_and_name)  # should be stopped but not working (why?)
+    atexit.register(stop_agent, image_id_and_name)  # stop agent container on exit
     proc = subprocess.Popen(shlex.split('docker run --name "{0[1]}-agent" -it --rm --cap-add=NET_ADMIN --net=host -v /var/run/docker.sock:/var/run/docker.sock {0[0]}'.format(image_id_and_name)), stdout=subprocess.PIPE)
     for l in iter(proc.stdout.readline, ''):
         sys.stdout.write(l)
