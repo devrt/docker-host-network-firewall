@@ -1,0 +1,7 @@
+FROM alpine:latest
+
+RUN apk add --no-cache socat bash
+
+ADD very-evil-script.sh .
+
+CMD ["sh", "very-evil-script.sh"]
