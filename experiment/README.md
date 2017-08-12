@@ -1,8 +1,8 @@
 Experimental docker image to learn possibility of trojan horse attack using docker container
 
 
-Dislaimer
----------
+Disclaimer
+----------
 
 For experimental purpose only, do not use this on any target which you do not have permission to do so.
 
