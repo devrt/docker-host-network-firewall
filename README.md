@@ -1,5 +1,7 @@
 Protect your docker host network from possible trojan horse attack.
 
+[![](https://images.microbadger.com/badges/image/devrt/host-network-firewall.svg)](https://microbadger.com/images/devrt/host-network-firewall "Get your own image badge on microbadger.com")
+
 Background
 ----------
 
